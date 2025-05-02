@@ -1,3 +1,13 @@
+<!-- project badges or shields can go here -->
+
+<p align="center">
+  <!-- logo generated earlier -->
+  <img src="images/funP2P_logo.png" alt="funP2P Logo" width="220"/><br/>
+  <!-- new project icon -->
+  <img src="images/icon.png" alt="funP2P Icon" width="120"/>
+</p>
+
+
 # funP2P – Kademlia DHT-Based P2P Network
 
 **funP2P** began as a personal project to understand peer-to-peer networking, and it’s now evolving toward launching its own **blockchain mainnet** for fully decentralized connectivity.
