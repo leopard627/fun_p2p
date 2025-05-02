@@ -1,83 +1,88 @@
-# Kademlia DHT 기반 P2P 네트워크 구현
+# funP2P – Kademlia DHT-Based P2P Network
 
-간단한 Kademlia 분산 해시 테이블(DHT)을 사용하여 P2P 네트워크를 구현한 프로젝트입니다. 이 프로젝트는 분산 시스템의 기본 개념을 이해하고 실험하기 위한 목적으로 개발되었습니다.
+**funP2P** began as a personal project to understand peer-to-peer networking, and it’s now evolving toward launching its own **blockchain mainnet** for fully decentralized connectivity.
 
-## 프로젝트 개요
+**Project inquiries** → [elastic7327@proton.me](mailto:elastic7327@proton.me)
+**Telegram** → [@jhe7327](http://t.me/jhe7327)
 
-이 프로젝트는 Python의 `kademlia` 라이브러리를 사용하여 다음과 같은 기능을 구현합니다:
+---
 
-- 부트스트랩 노드 설정 및 관리
-- 분산 해시 테이블(DHT)에 데이터 저장 및 검색
-- 피어 탐색 및 직접 P2P 연결
-- 간단한 메시지 교환
+## Project Overview
 
-## 시스템 구성
+This repository demonstrates a peer-to-peer network built on a lightweight Kademlia Distributed Hash Table (DHT). It was created to explore and experiment with core distributed-system concepts.
 
-프로젝트는 두 가지 주요 컴포넌트로 구성됩니다:
+## Key Capabilities (via Python `kademlia`)
 
-1. **부트스트랩 노드** (`bootstrap_node.py`)
-   - 네트워크 진입점 역할
-   - DHT 데이터 지속적 저장
-   - 피어 디스커버리 지원
+* Configure and manage bootstrap nodes
+* Store and retrieve data in a distributed hash table
+* Discover peers and create direct P2P links
+* Exchange simple messages between nodes
 
-2. **피어 노드** (`peer.py`)
-   - DHT를 통한 다른 피어 탐색
-   - 토픽 기반 그룹 참여
-   - 직접 P2P 통신
+## System Components
 
-## 기술 스택
+1. **Bootstrap Node** (`bootstrap_node.py`)
 
-- **Python 3.9+**
-- **aiokademlia**: Kademlia DHT 프로토콜 구현
-- **asyncio**: 비동기 I/O 작업 처리
-- **JSON**: 데이터 직렬화
+   * Entry point to the network
+   * Persists DHT data
+   * Assists with peer discovery
 
-## 설치 방법
+2. **Peer Node** (`peer.py`)
 
-1. 필요한 환경 설정 (Python 3.9+ 및 pipenv 필요)
+   * Discovers other peers through the DHT
+   * Joins topic-based groups
+   * Establishes direct P2P communication
+
+## Tech Stack
+
+* **Python 3.9+**
+* **aiokademlia** – Kademlia DHT protocol implementation
+* **asyncio** – asynchronous I/O
+* **JSON** – data serialization
+
+## Installation
 
 ```bash
-# pyenv로 가상환경 생성 (선택사항)
+# (Optional) create virtual env via pyenv
 pyenv virtualenv 3.12.1 fun_p2p
 pyenv local fun_p2p
 
-# 의존성 설치
+# Install dependencies
 pip install -r requirements/requirements.txt
 ```
 
-## 실행 방법
+## Quick Start
 
-### 1. 부트스트랩 노드 실행
+### 1 ▪ Run the Bootstrap Node
 
 ```bash
 python bootstrap_node.py
 ```
 
-부트스트랩 노드는 기본적으로 `0.0.0.0:8468`에서 수신 대기합니다.
+The bootstrap node listens on `0.0.0.0:8468` by default.
 
-### 2. 피어 노드 실행
+### 2 ▪ Run a Peer Node
 
 ```bash
 python peer.py
 ```
 
-각 피어 노드는 랜덤 포트를 사용하여 시작하고 부트스트랩 노드에 자동으로 연결됩니다.
+Each peer starts on a random port and automatically connects to the bootstrap node.
 
-## 작동 원리
+## How It Works
 
-1. **노드 부트스트래핑**:
-   - 피어 노드는 시작 시 알려진 부트스트랩 노드에 연결합니다.
-   - Kademlia 프로토콜을 통해 네트워크 토폴로지를 학습합니다.
+1. **Node Bootstrapping**
 
-2. **피어 디스커버리**:
-   - 각 피어는 자신의 ID와 주소 정보를 DHT에 저장합니다.
-   - 토픽 키워드(예: "global-chat")를 사용하여 관심 그룹을 형성합니다.
+   * On startup, a peer connects to the known bootstrap node and learns the network topology via the Kademlia protocol.
 
-3. **직접 연결**:
-   - DHT에서 발견한 피어 정보를 사용해 직접적인 TCP 연결을 설정합니다.
-   - 간단한 메시지를 교환하여 연결을 확인합니다.
+2. **Peer Discovery**
 
-## 시스템 구조
+   * Every peer stores its ID and address in the DHT, using topic keys (e.g., `"global-chat"`) to form interest groups.
+
+3. **Direct Connections**
+
+   * Using information from the DHT, peers establish direct TCP links and exchange test messages to confirm connectivity.
+
+## System Diagram
 
 ```
 ┌─────────────────┐         ┌─────────────────┐
@@ -85,45 +90,43 @@ python peer.py
 └─────────────────┘         └─────────────────┘
         ▲                          ▲  ▲
         │                          │  │
-        │                          │  │
         ▼                          │  │
 ┌─────────────────┐                │  │
 │  Kademlia DHT   │◀───────────────┘  │
 └─────────────────┘                   │
         ▲                             │
-        │                             │
         ▼                             ▼
 ┌─────────────────┐         ┌─────────────────┐
 │    Peer Node    │◀────────▶│    Peer Node    │
 └─────────────────┘         └─────────────────┘
 ```
 
-## 주요 기능
+## Features
 
-- **분산 데이터 저장**: 키-값 형태로 데이터를 네트워크 전체에 분산 저장
-- **자동 피어 탐색**: 네트워크 참여자를 자동으로 찾고 연결
-- **토픽 기반 그룹**: 공통 관심사를 중심으로 피어 그룹화
-- **직접 P2P 메시징**: 중앙 서버 없이 피어 간 직접 통신
+* **Distributed Data Storage** – key–value data is spread across the network
+* **Automatic Peer Discovery** – nodes find each other without manual lists
+* **Topic-Based Groups** – peers cluster around shared interests
+* **Direct P2P Messaging** – communication without central servers
 
-## 개발 노트
+## Development Notes
 
-### 알려진 제한사항
+### Known Limitations
 
-- **NAT 투과**: 현재 구현은 NAT 뒤에 있는 노드 간 직접 연결을 지원하지 않음
-- **데이터 타입 제한**: DHT는 기본적으로 원시 타입만 저장 가능 (JSON 직렬화로 해결)
-- **보안**: 현재 구현은 암호화나 인증 메커니즘을 포함하지 않음
+* **NAT Traversal** – nodes behind NAT currently can’t connect directly
+* **Data-Type Constraints** – DHT natively holds primitive types (work-around: JSON)
+* **Security** – no encryption or authentication yet
 
-### 향후 개선 방향
+### Planned Improvements
 
-- **NAT 투과 기능**: STUN/TURN을 활용한 NAT 투과 구현
-- **데이터 암호화**: 피어 간 통신 암호화 추가
-- **분산 콘텐츠 저장**: 대용량 콘텐츠의 분산 저장 및 검색 구현
-- **피어 신뢰 메커니즘**: 신뢰할 수 있는 피어 식별 메커니즘 도입
+* NAT punch-through using STUN/TURN
+* End-to-end encryption for peer traffic
+* Distributed content storage for large objects
+* Trust mechanisms to identify reputable peers
 
-## 라이선스
+## License
 
 MIT
 
-## 기여하기
+## Contributing
 
-버그 신고나 기능 제안은 이슈 트래커를 통해 제출해 주세요. 풀 리퀘스트도 환영합니다.
+Bug reports and feature suggestions are welcome via the issue tracker. Pull requests gladly accepted!
