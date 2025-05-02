@@ -1,4 +1,4 @@
-import asyncio, json, socket, struct, time
+import asyncio, json, socket, struct, time, os
 from kademlia.network import Server  # aiokademlia
 import logging
 import random
@@ -11,8 +11,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 로컬 부트스트랩 노드와 외부 노드 모두 사용
-BOOTSTRAP_NODES = [("127.0.0.1", 8468), ("dht.alpsoft.io", 8468)]
+# 환경 변수에서 부트스트랩 노드 가져오기
+bootstrap_node = os.environ.get("BOOTSTRAP_NODE", "127.0.0.1:8468")
+bootstrap_host, bootstrap_port = bootstrap_node.split(":")
+bootstrap_port = int(bootstrap_port)
+
+# 부트스트랩 노드 설정
+BOOTSTRAP_NODES = [(bootstrap_host, bootstrap_port)]
+logger.info(f"부트스트랩 노드 설정: {BOOTSTRAP_NODES}")
 
 # 갱신 주기 (초)
 DHT_REFRESH_INTERVAL = 60  # 피어 정보 갱신 주기
@@ -48,9 +54,9 @@ async def main():
     try:
         # 타임스탬프를 포함한 피어 정보
         peer_info = {
-            "ip": local_ip, 
+            "ip": local_ip,
             "port": local_port,
-            "last_seen": time.time()  # 타임스탬프 추가
+            "last_seen": time.time(),  # 타임스탬프 추가
         }
         address_json = json.dumps(peer_info)
         await asyncio.wait_for(dht.set(peer_id, address_json), timeout=10)
@@ -80,12 +86,12 @@ async def main():
 
         # 내 정보 추가 - 타임스탬프 포함
         my_peer_info = {
-            "id": peer_id, 
-            "ip": local_ip, 
+            "id": peer_id,
+            "ip": local_ip,
             "port": local_port,
-            "last_seen": time.time()  # 타임스탬프 추가
+            "last_seen": time.time(),  # 타임스탬프 추가
         }
-        
+
         # 기존 내 정보가 있으면 업데이트, 없으면 추가
         updated = False
         for i, peer in enumerate(peers):
@@ -93,7 +99,7 @@ async def main():
                 peers[i] = my_peer_info
                 updated = True
                 break
-                
+
         if not updated:
             peers.append(my_peer_info)
 
@@ -130,7 +136,7 @@ async def main():
             else:
                 # 일반 메시지인 경우
                 response = f"ACK FROM {peer_id}"
-            
+
             writer.write(response.encode())
             await writer.drain()
         except Exception as e:
@@ -148,46 +154,49 @@ async def main():
         while True:
             await asyncio.sleep(PEER_HEARTBEAT_INTERVAL)
             logger.info("💓 피어 하트비트 체크 중...")
-            
+
             # 현재 알려진 모든 피어에 대해 하트비트 체크
             try:
                 # 토픽에서 최신 피어 목록 가져오기
                 topic_data = await asyncio.wait_for(dht.get(topic), timeout=10)
                 if not topic_data:
                     continue
-                    
+
                 current_peers = json.loads(topic_data)
                 active_peers = []
-                
+
                 # 각 피어에 대해 PING 테스트
                 for peer in current_peers:
                     peer_id = peer.get("id")
-                    
+
                     # 자기 자신은 건너뛰기
                     if peer_id == peer_id:
                         active_peers.append(peer)
                         continue
-                        
+
                     host = peer.get("ip")
                     port = peer.get("port")
                     last_seen = peer.get("last_seen", 0)
-                    
+
                     if not host or not port:
                         continue
-                        
+
                     # 최근에 이미 확인된 피어는 다시 체크하지 않음
                     current_time = time.time()
-                    if peer_id in peer_status_cache and current_time - peer_status_cache[peer_id] < PEER_TIMEOUT:
+                    if (
+                        peer_id in peer_status_cache
+                        and current_time - peer_status_cache[peer_id] < PEER_TIMEOUT
+                    ):
                         # 캐시된 상태 정보 사용
                         peer["last_seen"] = peer_status_cache[peer_id]
                         active_peers.append(peer)
                         continue
-                    
+
                     # 피어가 최근에 업데이트되었다면 활성으로 간주
                     if current_time - last_seen < PEER_TIMEOUT:
                         active_peers.append(peer)
                         continue
-                    
+
                     # PING 메시지 전송하여 활성 여부 확인
                     try:
                         logger.info(f"🔄 PING 전송: {host}:{port}")
@@ -203,7 +212,7 @@ async def main():
                         # 응답 읽기
                         response = await asyncio.wait_for(reader.read(100), timeout=5)
                         response_str = response.decode()
-                        
+
                         if response_str.startswith("PONG"):
                             # 활성 피어로 간주
                             logger.info(f"✅ 활성 피어 확인: {host}:{port}")
@@ -221,29 +230,31 @@ async def main():
                         # 최근에 추가된 피어라면 한 번의 실패는 용서
                         if current_time - last_seen < PEER_TIMEOUT / 2:
                             active_peers.append(peer)
-                
+
                 # 피어 목록 업데이트
                 if len(active_peers) != len(current_peers):
                     # 내 정보 확실히 포함시키기
                     my_peer_info = {
-                        "id": peer_id, 
-                        "ip": local_ip, 
+                        "id": peer_id,
+                        "ip": local_ip,
                         "port": local_port,
-                        "last_seen": time.time()
+                        "last_seen": time.time(),
                     }
-                    
+
                     # 내 정보가 없으면 추가
                     if not any(p.get("id") == peer_id for p in active_peers):
                         active_peers.append(my_peer_info)
-                    
+
                     # DHT 업데이트
                     peers_json = json.dumps(active_peers)
                     await asyncio.wait_for(dht.set(topic, peers_json), timeout=10)
-                    logger.info(f"✅ 정리된 피어 목록 업데이트: {len(current_peers)} → {len(active_peers)}")
-                
+                    logger.info(
+                        f"✅ 정리된 피어 목록 업데이트: {len(current_peers)} → {len(active_peers)}"
+                    )
+
             except Exception as e:
                 logger.warning(f"⚠️ 하트비트 체크 실패: {e}")
-    
+
     # 7) 피어 목록 갱신 및 내 정보 유지
     async def refresh_peers():
         while True:
@@ -253,9 +264,9 @@ async def main():
 
                 # 내 정보 갱신
                 peer_info = {
-                    "ip": local_ip, 
+                    "ip": local_ip,
                     "port": local_port,
-                    "last_seen": time.time()
+                    "last_seen": time.time(),
                 }
                 address_json = json.dumps(peer_info)
                 await asyncio.wait_for(dht.set(peer_id, address_json), timeout=10)
@@ -272,28 +283,30 @@ async def main():
                     for i, peer in enumerate(peers):
                         if peer.get("id") == peer_id:
                             peers[i] = {
-                                "id": peer_id, 
-                                "ip": local_ip, 
+                                "id": peer_id,
+                                "ip": local_ip,
                                 "port": local_port,
-                                "last_seen": time.time()
+                                "last_seen": time.time(),
                             }
                             my_info_updated = True
                             break
-                    
+
                     # 내 정보가 없으면 추가
                     if not my_info_updated:
-                        peers.append({
-                            "id": peer_id, 
-                            "ip": local_ip, 
-                            "port": local_port,
-                            "last_seen": time.time()
-                        })
-                    
+                        peers.append(
+                            {
+                                "id": peer_id,
+                                "ip": local_ip,
+                                "port": local_port,
+                                "last_seen": time.time(),
+                            }
+                        )
+
                     # 갱신된 피어 목록 저장
                     peers_json = json.dumps(peers)
                     await asyncio.wait_for(dht.set(topic, peers_json), timeout=10)
                     logger.info("✅ 토픽 피어 목록 갱신됨")
-                    
+
                     # 간헐적으로 랜덤 피어 연결 테스트 (지나친 트래픽 방지를 위해 20% 확률로만)
                     if random.random() < 0.2 and peers:
                         random_peer = random.choice(peers)
@@ -324,14 +337,14 @@ async def main():
                 # 4시간마다 전체 DHT 리프레시
                 await asyncio.sleep(4 * 60 * 60)
                 logger.info("🔄 DHT 버킷 리프레시 시작...")
-                
+
                 # K-버킷 갱신
                 await dht.bootstrap(BOOTSTRAP_NODES)
-                
+
                 # 임의 키 쿼리로 DHT 상태 유지
                 random_key = str(random.getrandbits(160))
                 await dht.get(random_key)
-                
+
                 logger.info("✅ DHT 버킷 리프레시 완료")
             except Exception as e:
                 logger.warning(f"⚠️ DHT 리프레시 실패: {e}")
@@ -354,10 +367,10 @@ async def main():
             dht_refresh_task.cancel()
             try:
                 await asyncio.gather(
-                    refresh_peer_task, 
-                    heartbeat_task, 
-                    dht_refresh_task, 
-                    return_exceptions=True
+                    refresh_peer_task,
+                    heartbeat_task,
+                    dht_refresh_task,
+                    return_exceptions=True,
                 )
             except asyncio.CancelledError:
                 pass
