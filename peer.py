@@ -2,6 +2,8 @@ import asyncio, json, socket, struct, time, os
 from kademlia.network import Server  # aiokademlia
 import logging
 import random
+from wallet import Wallet
+from wallet_dht import WalletDHT
 
 # 로깅 설정
 logging.basicConfig(
@@ -67,6 +69,17 @@ async def main():
     # 피어 상태 캐시 - 피어 ID를 키로, 마지막 응답 시간을 값으로
     peer_status_cache = {}
 
+    # 새로운 부분: 지갑 초기화
+    wallet = Wallet()
+    wallet_dht = WalletDHT(dht, wallet)
+
+    # 지갑을 네트워크에 등록
+    try:
+        await wallet_dht.register_wallet(announce=False)
+        logger.info(f"💰 지갑 초기화 완료: {wallet.address}")
+    except Exception as e:
+        logger.warning(f"⚠️ 지갑 등록 실패: {e}")
+
     # 4) 임의 토픽(예: "global-chat") 찾기
     topic = "global-chat"
     peers = []
@@ -90,6 +103,7 @@ async def main():
             "ip": local_ip,
             "port": local_port,
             "last_seen": time.time(),  # 타임스탬프 추가
+            "wallet": wallet.address,  # 지갑 주소 추가
         }
 
         # 기존 내 정보가 있으면 업데이트, 없으면 추가
@@ -133,6 +147,21 @@ async def main():
                     response = f"PONG {peer_id}"
                 except:
                     response = f"PONG {peer_id}"
+            # 트랜잭션 메시지 처리 추가
+            elif message.startswith("TX"):
+                try:
+                    # 트랜잭션 데이터 파싱
+                    tx_data = json.loads(message[3:])
+                    # 트랜잭션 검증 (실제 구현에서는 더 철저하게 검증해야 함)
+                    if Wallet.verify_transaction(tx_data):
+                        # 트랜잭션 브로드캐스트
+                        await wallet_dht.broadcast_transaction(tx_data)
+                        response = f"TX_ACK {tx_data['tx_hash']}"
+                    else:
+                        response = "TX_INVALID"
+                except Exception as e:
+                    logger.error(f"트랜잭션 처리 오류: {e}")
+                    response = "TX_ERROR"
             else:
                 # 일반 메시지인 경우
                 response = f"ACK FROM {peer_id}"
@@ -239,6 +268,7 @@ async def main():
                         "ip": local_ip,
                         "port": local_port,
                         "last_seen": time.time(),
+                        "wallet": wallet.address,  # 지갑 주소 추가
                     }
 
                     # 내 정보가 없으면 추가
@@ -287,6 +317,7 @@ async def main():
                                 "ip": local_ip,
                                 "port": local_port,
                                 "last_seen": time.time(),
+                                "wallet": wallet.address,  # 지갑 주소 추가
                             }
                             my_info_updated = True
                             break
@@ -299,6 +330,7 @@ async def main():
                                 "ip": local_ip,
                                 "port": local_port,
                                 "last_seen": time.time(),
+                                "wallet": wallet.address,  # 지갑 주소 추가
                             }
                         )
 
@@ -315,7 +347,9 @@ async def main():
                             port = random_peer.get("port")
                             if host and port:
                                 try:
-                                    logger.info(f"🔄 랜덤 피어 연결 테스트: {host}:{port}")
+                                    logger.info(
+                                        f"🔄 랜덤 피어 연결 테스트: {host}:{port}"
+                                    )
                                     reader, writer = await asyncio.wait_for(
                                         asyncio.open_connection(host, port), timeout=5
                                     )
@@ -324,7 +358,9 @@ async def main():
                                     await writer.drain()
                                     # 응답은 무시
                                     writer.close()
-                                    logger.info(f"✅ 랜덤 피어 연결 성공: {host}:{port}")
+                                    logger.info(
+                                        f"✅ 랜덤 피어 연결 성공: {host}:{port}"
+                                    )
                                 except Exception as e:
                                     logger.warning(f"❌ 랜덤 피어 연결 실패: {e}")
             except Exception as e:
@@ -349,10 +385,21 @@ async def main():
             except Exception as e:
                 logger.warning(f"⚠️ DHT 리프레시 실패: {e}")
 
+    # 9) 지갑 동기화 태스크 추가
+    async def wallet_sync_task():
+        while True:
+            try:
+                await asyncio.sleep(60)  # 1분마다 동기화
+                await wallet_dht.sync_wallet()
+                logger.info(f"💰 지갑 동기화 완료. 잔액: {wallet.balance}")
+            except Exception as e:
+                logger.warning(f"⚠️ 지갑 동기화 실패: {e}")
+
     # 태스크 시작
     refresh_peer_task = asyncio.create_task(refresh_peers())
     heartbeat_task = asyncio.create_task(check_peer_heartbeat())
     dht_refresh_task = asyncio.create_task(refresh_dht())
+    wallet_task = asyncio.create_task(wallet_sync_task())  # 지갑 태스크 추가
 
     # 서버 실행 유지
     async with server:
@@ -365,11 +412,13 @@ async def main():
             refresh_peer_task.cancel()
             heartbeat_task.cancel()
             dht_refresh_task.cancel()
+            wallet_task.cancel()  # 지갑 태스크 취소
             try:
                 await asyncio.gather(
                     refresh_peer_task,
                     heartbeat_task,
                     dht_refresh_task,
+                    wallet_task,  # 지갑 태스크 추가
                     return_exceptions=True,
                 )
             except asyncio.CancelledError:

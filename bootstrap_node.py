@@ -15,7 +15,10 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8468"))
 
 # 사용자 홈 디렉토리에 저장 - 권한 문제 해결
 DATA_FILE = os.path.join(str(Path.home()), "dht_store.pkl")
-SEED_NODES = [("dht1.example.com", 8468), ("dht2.example.com", 8468)]  # 다른 부트스트랩 노드
+SEED_NODES = [
+    ("dht1.example.com", 8468),
+    ("dht2.example.com", 8468),
+]  # 다른 부트스트랩 노드
 # 키 만료 시간 (초) - 3시간
 KEY_EXPIRY_TIME = int(os.environ.get("KEY_EXPIRY_TIME", str(3 * 60 * 60)))
 
@@ -162,7 +165,9 @@ async def main() -> None:
                 # 만료된 키 제거
                 for key in keys_to_remove:
                     try:
-                        if key in server.storage.data.keys():  # in 연산자 대신 keys() 메서드 사용
+                        if (
+                            key in server.storage.data.keys()
+                        ):  # in 연산자 대신 keys() 메서드 사용
                             del server.storage.data[key]
                         if key in timestamp_data:
                             del timestamp_data[key]
@@ -176,7 +181,9 @@ async def main() -> None:
                 # 피어 목록 정리 - 특별 케이스 처리
                 try:
                     key = "global-chat"
-                    if key in server.storage.data.keys():  # in 연산자 대신 keys() 메서드 사용
+                    if (
+                        key in server.storage.data.keys()
+                    ):  # in 연산자 대신 keys() 메서드 사용
                         topic_data = server.storage.data[key]
                         peers = json.loads(topic_data)
 
