@@ -1,5 +1,7 @@
 # Byte-compiled / optimized / DLL files
 
+funp2p_wallet.json
+
 .DS_Store
 
 __pycache__/

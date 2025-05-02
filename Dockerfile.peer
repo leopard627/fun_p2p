@@ -8,8 +8,8 @@ COPY requirements/requirements.txt requirements.txt
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
-COPY peer.py .
+# Copy project files - 모든 필요한 파일을 복사
+COPY peer.py wallet.py wallet_dht.py kademlia_wrapper.py ./
 
 # Run the peer node
 CMD ["python", "peer.py"]
