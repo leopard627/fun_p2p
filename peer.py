@@ -1,5 +1,5 @@
 import asyncio, json, socket, struct, time, os
-from kademlia.network import Server  # aiokademlia
+from kademlia_wrapper import SafeKademliaServer  # 새로운 래퍼 클래스 사용
 import logging
 import random
 from wallet import Wallet
@@ -13,43 +13,69 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 환경 변수에서 부트스트랩 노드 가져오기
+# 환경 변수에서 설정 가져오기
 bootstrap_node = os.environ.get("BOOTSTRAP_NODE", "127.0.0.1:8468")
 bootstrap_host, bootstrap_port = bootstrap_node.split(":")
 bootstrap_port = int(bootstrap_port)
+
+# 타임아웃 설정 가져오기
+RPC_TIMEOUT = int(os.environ.get("RPC_TIMEOUT", "10"))  # 기본값 10초로 증가
+BOOTSTRAP_RETRY = int(os.environ.get("BOOTSTRAP_RETRY", "5"))  # 재시도 횟수 증가
 
 # 부트스트랩 노드 설정
 BOOTSTRAP_NODES = [(bootstrap_host, bootstrap_port)]
 logger.info(f"부트스트랩 노드 설정: {BOOTSTRAP_NODES}")
 
-# 갱신 주기 (초)
-DHT_REFRESH_INTERVAL = 60  # 피어 정보 갱신 주기
-PEER_HEARTBEAT_INTERVAL = 120  # 피어 하트비트 체크 주기
-PEER_TIMEOUT = 300  # 5분간 응답 없으면 피어 제거
+# 갱신 주기 (초) - 환경 변수에서 가져오기
+DHT_REFRESH_INTERVAL = int(os.environ.get("DHT_REFRESH_INTERVAL", "60"))
+PEER_HEARTBEAT_INTERVAL = int(
+    os.environ.get("PEER_HEARTBEAT_INTERVAL", "180")
+)  # 기본값 3분으로 증가
+PEER_TIMEOUT = int(os.environ.get("PEER_TIMEOUT", "600"))  # 기본값 10분으로 증가
 
 
 async def main():
     logger.info("P2P 노드 시작 중...")
-    dht = Server()  # 1) DHT 시작
-    await dht.listen(0)  #   0 → 랜덤포트
+    # 예외 처리가 개선된 SafeKademliaServer 사용
+    dht = SafeKademliaServer()
+    await dht.listen(0)  # 0 → 랜덤포트
 
     # 자신의 주소 정보 가져오기
-    local_ip = socket.gethostbyname(socket.gethostname())
+    try:
+        local_ip = socket.gethostbyname(socket.gethostname())
+    except:
+        # 호스트 이름 확인 실패 시 대체 방법 사용
+        local_ip = "127.0.0.1"
+        try:
+            # 도커 환경에서 컨테이너 IP 가져오기 시도
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+        except:
+            logger.warning(
+                "⚠️ 로컬 IP 주소를 가져올 수 없습니다. 127.0.0.1을 사용합니다."
+            )
+
     local_port = dht.protocol.transport.get_extra_info("sockname")[1]
     local_address = (local_ip, local_port)
 
     logger.info(f"🌐 내 노드 정보: {local_ip}:{local_port}, ID: {dht.node.id.hex()}")
 
-    # 2) 부트스트랩 노드에 연결
-    try:
-        # 부트스트랩에 타임아웃 적용
-        await asyncio.wait_for(dht.bootstrap(BOOTSTRAP_NODES), timeout=10)
-        logger.info("✅ 부트스트랩 성공!")
-    except asyncio.TimeoutError:
-        logger.warning("⚠️ 부트스트랩 타임아웃 - 계속 진행합니다")
-    except Exception as e:
-        logger.warning(f"⚠️ 부트스트랩 오류: {e} - 계속 진행합니다")
+    # 노드 시작 시 약간의 지연 추가 - 컨테이너 간 시작 타이밍 분산
+    start_delay = random.uniform(1, 5)
+    logger.info(f"부트스트랩 시작 전 {start_delay:.1f}초 대기...")
+    await asyncio.sleep(start_delay)
 
+    # 2) 부트스트랩 노드에 연결 - 여러 번 재시도
+    bootstrap_success = await dht.bootstrap(
+        BOOTSTRAP_NODES, retry_count=BOOTSTRAP_RETRY, retry_delay=2
+    )
+    if bootstrap_success:
+        logger.info("✅ 부트스트랩 성공!")
+    else:
+        logger.warning("⚠️ 부트스트랩 실패 - 계속 진행합니다")
+
+    # 노드 ID를 16진수 문자열로 변환
     peer_id = dht.node.id.hex()
 
     # 3) 내 존재 알리기 - 주소를 JSON으로 직렬화
@@ -61,8 +87,11 @@ async def main():
             "last_seen": time.time(),  # 타임스탬프 추가
         }
         address_json = json.dumps(peer_info)
-        await asyncio.wait_for(dht.set(peer_id, address_json), timeout=10)
-        logger.info(f"✅ DHT에 내 정보 저장 성공: {peer_id} -> {address_json}")
+        success = await dht.safe_set(peer_id, address_json, max_attempts=3, delay=2)
+        if success:
+            logger.info(f"✅ DHT에 내 정보 저장 성공: {peer_id}")
+        else:
+            logger.warning(f"⚠️ DHT에 내 정보 저장 실패")
     except Exception as e:
         logger.warning(f"⚠️ DHT 저장 실패: {e}")
 
@@ -75,7 +104,7 @@ async def main():
 
     # 지갑을 네트워크에 등록
     try:
-        await wallet_dht.register_wallet(announce=False)
+        await wallet_dht.register_wallet(announce=False)  # 기본적으로 공개하지 않음
         logger.info(f"💰 지갑 초기화 완료: {wallet.address}")
     except Exception as e:
         logger.warning(f"⚠️ 지갑 등록 실패: {e}")
@@ -86,7 +115,7 @@ async def main():
 
     try:
         # 토픽에 저장된 피어 목록 가져오기
-        topic_data = await asyncio.wait_for(dht.get(topic), timeout=10)
+        topic_data = await dht.safe_get(topic, max_attempts=3, delay=2)
 
         if topic_data:
             try:
@@ -119,23 +148,26 @@ async def main():
 
         # 갱신된 피어 목록 저장
         peers_json = json.dumps(peers)
-        await asyncio.wait_for(dht.set(topic, peers_json), timeout=10)
-        logger.info(f"✅ 토픽 '{topic}'에 참가 성공")
+        success = await dht.safe_set(topic, peers_json, max_attempts=3, delay=2)
+        if success:
+            logger.info(f"✅ 토픽 '{topic}'에 참가 성공")
+        else:
+            logger.warning(f"⚠️ 토픽 참가 실패")
 
     except Exception as e:
         logger.warning(f"⚠️ 토픽 참가 실패: {e}")
         # 실패 시 나만 있는 목록으로 초기화
         peers = [my_peer_info]
 
-    logger.info(f"🌐 현재 토픽 참가자: {json.dumps(peers, indent=2)}")
+    logger.info(f"🌐 현재 토픽 참가자: {len(peers)}명")
 
     # 5) TCP 서버 시작 (다른 피어들의 연결을 받기 위해)
     async def handle_client(reader, writer):
         addr = writer.get_extra_info("peername")
         try:
-            data = await asyncio.wait_for(reader.read(1024), timeout=5)
+            data = await asyncio.wait_for(reader.read(1024), timeout=RPC_TIMEOUT)
             message = data.decode()
-            logger.info(f"📬 메시지 수신 ({addr[0]}:{addr[1]}): {message}")
+            logger.info(f"📬 메시지 수신 ({addr[0]}:{addr[1]}): {message[:50]}...")
 
             # 메시지 처리 - PING 요청이면 PONG으로 응답
             if message.startswith("PING"):
@@ -164,19 +196,56 @@ async def main():
                     response = "TX_ERROR"
             else:
                 # 일반 메시지인 경우
-                response = f"ACK FROM {peer_id}"
+                response = f"ACK FROM {peer_id[:10]}..."
 
             writer.write(response.encode())
             await writer.drain()
+        except asyncio.TimeoutError:
+            logger.warning(f"⚠️ 클라이언트 요청 타임아웃 ({addr[0]}:{addr[1]})")
+        except ConnectionResetError:
+            logger.warning(f"⚠️ 연결 재설정 ({addr[0]}:{addr[1]})")
         except Exception as e:
             logger.error(f"❌ 클라이언트 처리 오류 ({addr[0]}:{addr[1]}): {e}")
         finally:
-            writer.close()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except:
+                pass
 
     # TCP 서버 시작
-    server = await asyncio.start_server(handle_client, local_ip, local_port)
+    server = None
+    max_retries = 5
+    for retry in range(max_retries):
+        try:
+            server = await asyncio.start_server(handle_client, local_ip, local_port)
+            logger.info(f"🎧 TCP 서버 시작됨: {local_ip}:{local_port}")
+            break
+        except Exception as e:
+            if retry < max_retries - 1:
+                logger.warning(
+                    f"⚠️ TCP 서버 시작 실패, 재시도 중 ({retry+1}/{max_retries}): {e}"
+                )
+                await asyncio.sleep(2)
+            else:
+                logger.error(f"❌ TCP 서버 시작 최대 재시도 횟수 초과: {e}")
+                # 대체 포트 시도
+                try:
+                    alt_port = random.randint(10000, 65000)
+                    server = await asyncio.start_server(
+                        handle_client, local_ip, alt_port
+                    )
+                    local_port = alt_port
+                    logger.info(
+                        f"🎧 대체 포트로 TCP 서버 시작됨: {local_ip}:{local_port}"
+                    )
+                except Exception as e2:
+                    logger.error(f"❌ 대체 포트로도 TCP 서버 시작 실패: {e2}")
+                    return
 
-    logger.info(f"🎧 TCP 서버 시작됨: {local_ip}:{local_port}")
+    if not server:
+        logger.error("❌ TCP 서버를 시작할 수 없습니다.")
+        return
 
     # 6) 피어 하트비트 체크 - 피어의 활성 상태 검증
     async def check_peer_heartbeat():
@@ -187,16 +256,23 @@ async def main():
             # 현재 알려진 모든 피어에 대해 하트비트 체크
             try:
                 # 토픽에서 최신 피어 목록 가져오기
-                topic_data = await asyncio.wait_for(dht.get(topic), timeout=10)
+                topic_data = await dht.safe_get(topic, max_attempts=2)
                 if not topic_data:
                     continue
 
-                current_peers = json.loads(topic_data)
+                try:
+                    current_peers = json.loads(topic_data)
+                except json.JSONDecodeError:
+                    logger.warning("⚠️ 피어 목록 형식 오류, 건너뜁니다")
+                    continue
+
                 active_peers = []
 
                 # 각 피어에 대해 PING 테스트
                 for peer in current_peers:
                     peer_id = peer.get("id")
+                    if not peer_id:
+                        continue
 
                     # 자기 자신은 건너뛰기
                     if peer_id == peer_id:
@@ -255,7 +331,7 @@ async def main():
                         writer.close()
                         await writer.wait_closed()
                     except Exception as e:
-                        logger.warning(f"❌ 피어 접속 실패 {host}:{port}: {e}")
+                        logger.warning(f"❌ 피어 접속 실패 {host}:{port}")
                         # 최근에 추가된 피어라면 한 번의 실패는 용서
                         if current_time - last_seen < PEER_TIMEOUT / 2:
                             active_peers.append(peer)
@@ -277,13 +353,16 @@ async def main():
 
                     # DHT 업데이트
                     peers_json = json.dumps(active_peers)
-                    await asyncio.wait_for(dht.set(topic, peers_json), timeout=10)
-                    logger.info(
-                        f"✅ 정리된 피어 목록 업데이트: {len(current_peers)} → {len(active_peers)}"
-                    )
+                    success = await dht.safe_set(topic, peers_json, max_attempts=2)
+                    if success:
+                        logger.info(
+                            f"✅ 정리된 피어 목록 업데이트: {len(current_peers)} → {len(active_peers)}"
+                        )
+                    else:
+                        logger.warning("⚠️ 피어 목록 업데이트 실패")
 
             except Exception as e:
-                logger.warning(f"⚠️ 하트비트 체크 실패: {e}")
+                logger.warning(f"⚠️ 하트비트 체크 실패: {str(e)[:100]}...")
 
     # 7) 피어 목록 갱신 및 내 정보 유지
     async def refresh_peers():
@@ -299,72 +378,80 @@ async def main():
                     "last_seen": time.time(),
                 }
                 address_json = json.dumps(peer_info)
-                await asyncio.wait_for(dht.set(peer_id, address_json), timeout=10)
-                logger.info("✅ DHT에 내 정보 갱신됨")
+                success = await dht.safe_set(peer_id, address_json, max_attempts=2)
+                if success:
+                    logger.info("✅ DHT에 내 정보 갱신됨")
+                else:
+                    logger.warning("⚠️ DHT에 내 정보 갱신 실패")
 
                 # 토픽에서 최신 피어 목록 가져오기
-                topic_data = await asyncio.wait_for(dht.get(topic), timeout=10)
+                topic_data = await dht.safe_get(topic, max_attempts=2)
                 if topic_data:
-                    peers = json.loads(topic_data)
-                    logger.info(f"✅ 토픽에서 {len(peers)} 피어 발견")
+                    try:
+                        peers = json.loads(topic_data)
+                        logger.info(f"✅ 토픽에서 {len(peers)} 피어 발견")
 
-                    # 내 정보 업데이트
-                    my_info_updated = False
-                    for i, peer in enumerate(peers):
-                        if peer.get("id") == peer_id:
-                            peers[i] = {
-                                "id": peer_id,
-                                "ip": local_ip,
-                                "port": local_port,
-                                "last_seen": time.time(),
-                                "wallet": wallet.address,  # 지갑 주소 추가
-                            }
-                            my_info_updated = True
-                            break
+                        # 내 정보 업데이트
+                        my_info_updated = False
+                        for i, peer in enumerate(peers):
+                            if peer.get("id") == peer_id:
+                                peers[i] = {
+                                    "id": peer_id,
+                                    "ip": local_ip,
+                                    "port": local_port,
+                                    "last_seen": time.time(),
+                                    "wallet": wallet.address,  # 지갑 주소 추가
+                                }
+                                my_info_updated = True
+                                break
 
-                    # 내 정보가 없으면 추가
-                    if not my_info_updated:
-                        peers.append(
-                            {
-                                "id": peer_id,
-                                "ip": local_ip,
-                                "port": local_port,
-                                "last_seen": time.time(),
-                                "wallet": wallet.address,  # 지갑 주소 추가
-                            }
-                        )
+                        # 내 정보가 없으면 추가
+                        if not my_info_updated:
+                            peers.append(
+                                {
+                                    "id": peer_id,
+                                    "ip": local_ip,
+                                    "port": local_port,
+                                    "last_seen": time.time(),
+                                    "wallet": wallet.address,  # 지갑 주소 추가
+                                }
+                            )
 
-                    # 갱신된 피어 목록 저장
-                    peers_json = json.dumps(peers)
-                    await asyncio.wait_for(dht.set(topic, peers_json), timeout=10)
-                    logger.info("✅ 토픽 피어 목록 갱신됨")
+                        # 갱신된 피어 목록 저장
+                        peers_json = json.dumps(peers)
+                        success = await dht.safe_set(topic, peers_json, max_attempts=2)
+                        if success:
+                            logger.info("✅ 토픽 피어 목록 갱신됨")
+                        else:
+                            logger.warning("⚠️ 토픽 피어 목록 갱신 실패")
+                    except json.JSONDecodeError:
+                        logger.warning(f"⚠️ 토픽 데이터 형식 오류: {topic_data[:50]}...")
 
-                    # 간헐적으로 랜덤 피어 연결 테스트 (지나친 트래픽 방지를 위해 20% 확률로만)
-                    if random.random() < 0.2 and peers:
-                        random_peer = random.choice(peers)
-                        if random_peer.get("id") != peer_id:  # 자기 자신이 아닌지 확인
-                            host = random_peer.get("ip")
-                            port = random_peer.get("port")
-                            if host and port:
-                                try:
-                                    logger.info(
-                                        f"🔄 랜덤 피어 연결 테스트: {host}:{port}"
-                                    )
-                                    reader, writer = await asyncio.wait_for(
-                                        asyncio.open_connection(host, port), timeout=5
-                                    )
-                                    # 간단한 핑 메시지
-                                    writer.write(f"PING {peer_id}".encode())
-                                    await writer.drain()
-                                    # 응답은 무시
-                                    writer.close()
-                                    logger.info(
-                                        f"✅ 랜덤 피어 연결 성공: {host}:{port}"
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"❌ 랜덤 피어 연결 실패: {e}")
+                # 간헐적으로 랜덤 피어 연결 테스트 (지나친 트래픽 방지를 위해 20% 확률로만)
+                if random.random() < 0.2 and peers:
+                    random_peer = random.choice(peers)
+                    if random_peer.get("id") != peer_id:  # 자기 자신이 아닌지 확인
+                        host = random_peer.get("ip")
+                        port = random_peer.get("port")
+                        if host and port:
+                            try:
+                                logger.info(f"🔄 랜덤 피어 연결 테스트: {host}:{port}")
+                                reader, writer = await asyncio.wait_for(
+                                    asyncio.open_connection(host, port), timeout=5
+                                )
+                                # 간단한 핑 메시지
+                                writer.write(f"PING {peer_id}".encode())
+                                await writer.drain()
+                                # 응답은 무시
+                                writer.close()
+                                await writer.wait_closed()
+                                logger.info(f"✅ 랜덤 피어 연결 성공: {host}:{port}")
+                            except Exception as e:
+                                logger.warning(
+                                    f"❌ 랜덤 피어 연결 실패: {str(e)[:100]}..."
+                                )
             except Exception as e:
-                logger.warning(f"⚠️ 피어 목록 갱신 실패: {e}")
+                logger.warning(f"⚠️ 피어 목록 갱신 실패: {str(e)[:100]}...")
 
     # 8) DHT 갱신 - K-버킷을 최신 상태로 유지
     async def refresh_dht():
@@ -375,15 +462,21 @@ async def main():
                 logger.info("🔄 DHT 버킷 리프레시 시작...")
 
                 # K-버킷 갱신
-                await dht.bootstrap(BOOTSTRAP_NODES)
+                success = await dht.bootstrap(
+                    BOOTSTRAP_NODES, retry_count=3, retry_delay=2
+                )
+                if success:
+                    logger.info("✅ DHT 버킷 리프레시 성공")
+                else:
+                    logger.warning("⚠️ DHT 버킷 리프레시 실패")
 
                 # 임의 키 쿼리로 DHT 상태 유지
                 random_key = str(random.getrandbits(160))
-                await dht.get(random_key)
+                await dht.safe_get(random_key, max_attempts=1)
 
                 logger.info("✅ DHT 버킷 리프레시 완료")
             except Exception as e:
-                logger.warning(f"⚠️ DHT 리프레시 실패: {e}")
+                logger.warning(f"⚠️ DHT 리프레시 실패: {str(e)[:100]}...")
 
     # 9) 지갑 동기화 태스크 추가
     async def wallet_sync_task():
@@ -393,42 +486,143 @@ async def main():
                 await wallet_dht.sync_wallet()
                 logger.info(f"💰 지갑 동기화 완료. 잔액: {wallet.balance}")
             except Exception as e:
-                logger.warning(f"⚠️ 지갑 동기화 실패: {e}")
+                logger.warning(f"⚠️ 지갑 동기화 실패: {str(e)[:100]}...")
+
+    # 10) 오류 복구 태스크 - 연결 끊김 감지 및 재연결
+    async def reconnect_task():
+        consecutive_failures = 0
+        max_failures = 5  # 연속 실패 최대 허용 수
+
+        while True:
+            await asyncio.sleep(5 * 60)  # 5분마다 체크
+
+            try:
+                # 간단한 DHT 테스트 쿼리 수행
+                test_key = "dht:ping"
+                test_value = f"ping:{int(time.time())}"
+                success = await dht.safe_set(test_key, test_value, max_attempts=1)
+
+                if success:
+                    # 성공하면 카운터 리셋
+                    if consecutive_failures > 0:
+                        logger.info(
+                            f"✅ DHT 연결 복구됨 (이전 실패: {consecutive_failures}회)"
+                        )
+                    consecutive_failures = 0
+                else:
+                    # 실패 카운터 증가
+                    consecutive_failures += 1
+                    logger.warning(
+                        f"⚠️ DHT 테스트 실패 ({consecutive_failures}/{max_failures})"
+                    )
+
+                    if consecutive_failures >= max_failures:
+                        # 최대 실패 횟수 초과 시 재연결 시도
+                        logger.warning("🔄 DHT 재연결 시도 중...")
+
+                        # 부트스트랩 노드에 다시 연결
+                        success = await dht.bootstrap(
+                            BOOTSTRAP_NODES, retry_count=3, retry_delay=2
+                        )
+                        if success:
+                            logger.info("✅ DHT 재연결 성공")
+                            consecutive_failures = 0
+                        else:
+                            logger.error("❌ DHT 재연결 실패")
+            except Exception as e:
+                consecutive_failures += 1
+                logger.warning(f"⚠️ 연결 복구 검사 중 오류: {str(e)[:100]}...")
 
     # 태스크 시작
     refresh_peer_task = asyncio.create_task(refresh_peers())
     heartbeat_task = asyncio.create_task(check_peer_heartbeat())
     dht_refresh_task = asyncio.create_task(refresh_dht())
-    wallet_task = asyncio.create_task(wallet_sync_task())  # 지갑 태스크 추가
+    wallet_task = asyncio.create_task(wallet_sync_task())
+    reconnect_task = asyncio.create_task(reconnect_task())  # 새 태스크 추가
 
     # 서버 실행 유지
-    async with server:
+    try:
+        async with server:
+            stop_event = asyncio.Event()
+
+            # 종료 신호 처리
+            def handle_exit():
+                logger.info("종료 신호 수신...")
+                stop_event.set()
+
+            # Ctrl+C 처리
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.add_signal_handler(sig, handle_exit)
+                except (NotImplementedError, RuntimeError):
+                    # Windows에서는 add_signal_handler가 작동하지 않음
+                    pass
+
+            # 메인 루프 - 종료 신호 대기
+            await stop_event.wait()
+            logger.info("안전한 종료 시작...")
+    except asyncio.CancelledError:
+        logger.info("🛑 서버 종료 중...")
+    except Exception as e:
+        logger.error(f"❌ 서버 실행 중 오류: {str(e)[:100]}...")
+    finally:
+        # 모든 태스크 취소
+        for task in [
+            refresh_peer_task,
+            heartbeat_task,
+            dht_refresh_task,
+            wallet_task,
+            reconnect_task,
+        ]:
+            task.cancel()
+
         try:
-            await server.serve_forever()
-        except asyncio.CancelledError:
-            logger.info("🛑 서버 종료 중...")
-        finally:
-            # 모든 태스크 취소
-            refresh_peer_task.cancel()
-            heartbeat_task.cancel()
-            dht_refresh_task.cancel()
-            wallet_task.cancel()  # 지갑 태스크 취소
+            # 안전하게 종료
+            pending = [
+                refresh_peer_task,
+                heartbeat_task,
+                dht_refresh_task,
+                wallet_task,
+                reconnect_task,
+            ]
+            await asyncio.gather(*pending, return_exceptions=True)
+
+            # 마지막으로 내 상태 업데이트 - 오프라인 표시
             try:
-                await asyncio.gather(
-                    refresh_peer_task,
-                    heartbeat_task,
-                    dht_refresh_task,
-                    wallet_task,  # 지갑 태스크 추가
-                    return_exceptions=True,
-                )
-            except asyncio.CancelledError:
+                # 토픽에서 최신 피어 목록 가져오기
+                topic_data = await dht.safe_get(topic, max_attempts=1)
+                if topic_data:
+                    peers = json.loads(topic_data)
+
+                    # 내 정보 제거
+                    peers = [p for p in peers if p.get("id") != peer_id]
+
+                    # 업데이트된 목록 저장
+                    peers_json = json.dumps(peers)
+                    await dht.safe_set(topic, peers_json, max_attempts=1)
+                    logger.info("✅ 피어 목록에서 내 정보 제거됨")
+            except:
                 pass
 
+            logger.info("👋 모든 자원이 안전하게 종료됨")
+        except asyncio.CancelledError:
+            pass
 
+
+# 모듈이 직접 실행될 때
 if __name__ == "__main__":
+    # 누락된 signal 모듈 import 추가
+    import signal
+
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("키보드 인터럽트로 종료됨")
-    except Exception as e:
-        logger.error(f"예기치 않은 오류로 종료됨: {e}")
+        # 예외 처리 개선
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("키보드 인터럽트로 종료됨")
+        except Exception as e:
+            logger.error(f"예기치 않은 오류로 종료됨: {str(e)[:100]}...")
+    finally:
+        # 정상 종료 확인
+        logger.info("프로그램 종료")

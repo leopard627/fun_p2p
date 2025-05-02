@@ -9,7 +9,7 @@ COPY requirements/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy project files
-COPY bootstrap_node.py .
+COPY bootstrap_node.py kademlia_wrapper.py .
 
 # Create a volume mount point for persistence
 VOLUME ["/root"]

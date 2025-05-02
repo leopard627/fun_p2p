@@ -16,6 +16,12 @@ services:
     environment:
       - LISTEN_IP=0.0.0.0
       - LISTEN_PORT=8468
+      - RPC_TIMEOUT=10  # 타임아웃 값 증가
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('127.0.0.1', 8468))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Start with 3 peer nodes
   peer1:
@@ -26,10 +32,19 @@ services:
     networks:
       - kademlia-net
     depends_on:
-      - bootstrap
+      bootstrap:
+        condition: service_healthy
     restart: unless-stopped
     environment:
       - BOOTSTRAP_NODE=bootstrap:8468
+      - RPC_TIMEOUT=10  # 타임아웃 값 증가
+      - PEER_HEARTBEAT_INTERVAL=180  # 하트비트 간격 늘림
+      - PEER_TIMEOUT=600  # 피어 타임아웃 늘림
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
   peer2:
     build:
@@ -39,10 +54,19 @@ services:
     networks:
       - kademlia-net
     depends_on:
-      - bootstrap
+      bootstrap:
+        condition: service_healthy
     restart: unless-stopped
     environment:
       - BOOTSTRAP_NODE=bootstrap:8468
+      - RPC_TIMEOUT=10
+      - PEER_HEARTBEAT_INTERVAL=180
+      - PEER_TIMEOUT=600
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
   peer3:
     build:
@@ -52,14 +76,26 @@ services:
     networks:
       - kademlia-net
     depends_on:
-      - bootstrap
+      bootstrap:
+        condition: service_healthy
     restart: unless-stopped
     environment:
       - BOOTSTRAP_NODE=bootstrap:8468
+      - RPC_TIMEOUT=10
+      - PEER_HEARTBEAT_INTERVAL=180
+      - PEER_TIMEOUT=600
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
 networks:
   kademlia-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16  # 고정 서브넷 설정
 
 volumes:
   bootstrap-data:
