@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile.bootstrap
+    container_name: kademlia-bootstrap
+    networks:
+      - kademlia-net
+    ports:
+      - "8468:8468/udp"
+    volumes:
+      - bootstrap-data:/root
+    restart: unless-stopped
+    environment:
+      - LISTEN_IP=0.0.0.0
+      - LISTEN_PORT=8468
+
+  # Start with 3 peer nodes
+  peer1:
+    build:
+      context: .
+      dockerfile: Dockerfile.peer
+    container_name: kademlia-peer1
+    networks:
+      - kademlia-net
+    depends_on:
+      - bootstrap
+    restart: unless-stopped
+    environment:
+      - BOOTSTRAP_NODE=bootstrap:8468
+
+  peer2:
+    build:
+      context: .
+      dockerfile: Dockerfile.peer
+    container_name: kademlia-peer2
+    networks:
+      - kademlia-net
+    depends_on:
+      - bootstrap
+    restart: unless-stopped
+    environment:
+      - BOOTSTRAP_NODE=bootstrap:8468
+
+  peer3:
+    build:
+      context: .
+      dockerfile: Dockerfile.peer
+    container_name: kademlia-peer3
+    networks:
+      - kademlia-net
+    depends_on:
+      - bootstrap
+    restart: unless-stopped
+    environment:
+      - BOOTSTRAP_NODE=bootstrap:8468
+
+networks:
+  kademlia-net:
+    driver: bridge
+
+volumes:
+  bootstrap-data:

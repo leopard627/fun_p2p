@@ -9,13 +9,15 @@ import asyncio, os, pickle, signal, logging, json, time
 from kademlia.network import Server
 from pathlib import Path
 
-LISTEN_IP = "0.0.0.0"  # 모든 인터페이스에서 수신
-LISTEN_PORT = 8468
+# 환경 변수에서 설정 가져오기
+LISTEN_IP = os.environ.get("LISTEN_IP", "0.0.0.0")  # 모든 인터페이스에서 수신
+LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8468"))
+
 # 사용자 홈 디렉토리에 저장 - 권한 문제 해결
 DATA_FILE = os.path.join(str(Path.home()), "dht_store.pkl")
 SEED_NODES = [("dht1.example.com", 8468), ("dht2.example.com", 8468)]  # 다른 부트스트랩 노드
 # 키 만료 시간 (초) - 3시간
-KEY_EXPIRY_TIME = 3 * 60 * 60
+KEY_EXPIRY_TIME = int(os.environ.get("KEY_EXPIRY_TIME", str(3 * 60 * 60)))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ async def main() -> None:
 
     # 1) 이전 스토어 로드 및 타임스탬프 정보 초기화
     timestamp_data = {}
-    
+
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "rb") as fp:
@@ -59,34 +61,47 @@ async def main() -> None:
     original_set_item = server.storage.__setitem__
     original_get_item = server.storage.__getitem__
     original_iter = server.storage.__iter__
-    
+
     # Kademlia의 ForgetfulStorage에는 __contains__가 없을 수 있음
     # 직접 in 연산자 검사 대신 데이터 사전 체크
-    
+
     # SET 오버라이드 - 키 설정 시 타임스탬프 업데이트
     def set_with_timestamp(key, value):
         timestamp_data[key] = time.time()
         return original_set_item(key, value)
-    
+
     # GET 오버라이드 - 키 접근 시 타임스탬프 업데이트
     def get_with_timestamp(key):
         if key in timestamp_data:
             timestamp_data[key] = time.time()
         return original_get_item(key)
-    
+
     # 타임스탬프 래핑 적용
     server.storage.__setitem__ = set_with_timestamp
     server.storage.__getitem__ = get_with_timestamp
     server.storage.__iter__ = original_iter
 
     # 2) 다른 부트스트랩 노드에 자동 커넥트 (순환 연결)
-    # if SEED_NODES:
-    #     try:
-    #         await server.bootstrap(SEED_NODES)
-    #         logger.info("🔗  connected to %d seed nodes", len(SEED_NODES))
-    #     except Exception as e:
-    #         logger.warning("bootstrap() failed: %s", e)
-    
+    # 환경 변수에서 시드 노드 목록을 가져올 수 있음
+    seed_node_env = os.environ.get("SEED_NODES", "")
+    if seed_node_env:
+        try:
+            # 형식: "host1:port1,host2:port2"
+            seed_nodes = []
+            for node in seed_node_env.split(","):
+                if ":" in node:
+                    host, port = node.split(":")
+                    seed_nodes.append((host, int(port)))
+
+            if seed_nodes:
+                try:
+                    await server.bootstrap(seed_nodes)
+                    logger.info(f"🔗 connected to {len(seed_nodes)} seed nodes")
+                except Exception as e:
+                    logger.warning(f"bootstrap() failed: {e}")
+        except Exception as e:
+            logger.warning(f"Could not parse SEED_NODES: {e}")
+
     # 3) 주기적 스냅숏
     async def persist():
         while True:
@@ -105,7 +120,7 @@ async def main() -> None:
                 logger.error(f"❌ 데이터 저장 실패: {e}")
 
     persist_task = asyncio.create_task(persist())
-    
+
     # 4) DHT 정리 로직 - 오래된 키 제거
     async def cleanup_dht():
         while True:
@@ -113,10 +128,10 @@ async def main() -> None:
                 # 30분마다 실행
                 await asyncio.sleep(30 * 60)
                 logger.info("🧹 DHT 정리 작업 시작...")
-                
+
                 current_time = time.time()
                 keys_to_remove = []
-                
+
                 # 만료된 키 찾기
                 for key, last_access in list(timestamp_data.items()):
                     if current_time - last_access > KEY_EXPIRY_TIME:
@@ -135,7 +150,7 @@ async def main() -> None:
                                             continue
                                 except:
                                     pass  # 처리 실패 시 제거 대상으로
-                            
+
                             # 피어 ID인 경우 - 일반 피어 정보
                             keys_to_remove.append(key)
                             # str 대신 repr 사용하여 안전하게 로깅
@@ -143,7 +158,7 @@ async def main() -> None:
                             logger.info(f"🗑️ 만료된 키 제거 예정: {key_repr}")
                         except Exception as e:
                             logger.warning(f"키 처리 중 오류: {e}")
-                
+
                 # 만료된 키 제거
                 for key in keys_to_remove:
                     try:
@@ -153,16 +168,18 @@ async def main() -> None:
                             del timestamp_data[key]
                     except Exception as e:
                         logger.warning(f"키 제거 중 오류: {e}")
-                
-                logger.info(f"✅ DHT 정리 완료. {len(keys_to_remove)}개 키 제거됨. 남은 키: {len(server.storage.data)}개")
-                
+
+                logger.info(
+                    f"✅ DHT 정리 완료. {len(keys_to_remove)}개 키 제거됨. 남은 키: {len(server.storage.data)}개"
+                )
+
                 # 피어 목록 정리 - 특별 케이스 처리
                 try:
                     key = "global-chat"
                     if key in server.storage.data.keys():  # in 연산자 대신 keys() 메서드 사용
                         topic_data = server.storage.data[key]
                         peers = json.loads(topic_data)
-                        
+
                         # 피어 활성화 검증 (여기서는 단순화)
                         valid_peers = []
                         for peer in peers:
@@ -175,22 +192,24 @@ async def main() -> None:
                                     if storage_key == peer_id:
                                         peer_in_storage = True
                                         break
-                                
+
                                 if peer_in_storage:
                                     valid_peers.append(peer)
-                        
+
                         # 정리된 피어 목록 저장
                         if len(valid_peers) != len(peers):
                             peers_json = json.dumps(valid_peers)
                             server.storage.data[key] = peers_json
                             timestamp_data[key] = current_time
-                            logger.info(f"🔄 토픽 '{key}' 피어 목록 정리됨: {len(peers)} → {len(valid_peers)}")
+                            logger.info(
+                                f"🔄 토픽 '{key}' 피어 목록 정리됨: {len(peers)} → {len(valid_peers)}"
+                            )
                 except Exception as e:
                     logger.warning(f"토픽 정리 중 오류: {e}")
-                    
+
             except Exception as e:
                 logger.error(f"❌ DHT 정리 실패: {e}")
-    
+
     cleanup_task = asyncio.create_task(cleanup_dht())
 
     # 5) graceful shutdown
